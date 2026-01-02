@@ -1,4 +1,4 @@
-const CACHE_NAME = 'pixel-art-v23';
+const CACHE_NAME = 'pixel-art-v24';
 const ASSETS = [
     './',
     './index.html',

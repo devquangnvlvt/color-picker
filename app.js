@@ -15,6 +15,10 @@ const appState = {
     paintedArray: null, // Uint8Array(width * height) for fast lookup
     container: null,
 
+    // Audio Context
+    audioCtx: null,
+    saveTimeout: null,
+
     // Interaction state
     activePointers: new Map(),
     lastPinchDistance: null,
@@ -38,9 +42,73 @@ async function init() {
     renderGallery();
     setupEventListeners();
     setupImageUpload();
+    setupImageUpload();
     setupResizeObserver();
+
+    // Add page visibility listener for forced save
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') {
+            saveProgressImmediate();
+        }
+    });
+
     animate();
 }
+
+// --- Audio Manager ---
+const SoundManager = {
+    init() {
+        if (!appState.audioCtx) {
+            appState.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+    },
+    playPop() {
+        if (!appState.audioCtx) this.init();
+        if (appState.audioCtx.state === 'suspended') appState.audioCtx.resume();
+
+        const osc = appState.audioCtx.createOscillator();
+        const gain = appState.audioCtx.createGain();
+
+        osc.connect(gain);
+        gain.connect(appState.audioCtx.destination);
+
+        osc.type = 'sine';
+        // Random pitch for variety
+        const freq = 600 + Math.random() * 200;
+        osc.frequency.setValueAtTime(freq, appState.audioCtx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(100, appState.audioCtx.currentTime + 0.1);
+
+        gain.gain.setValueAtTime(0.1, appState.audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, appState.audioCtx.currentTime + 0.1);
+
+        osc.start();
+        osc.stop(appState.audioCtx.currentTime + 0.1);
+    },
+    playSuccess() {
+        if (!appState.audioCtx) this.init();
+        if (appState.audioCtx.state === 'suspended') appState.audioCtx.resume();
+
+        const notes = [523.25, 659.25, 783.99, 1046.50]; // C Major Arpeggio
+        notes.forEach((freq, i) => {
+            const osc = appState.audioCtx.createOscillator();
+            const gain = appState.audioCtx.createGain();
+
+            osc.connect(gain);
+            gain.connect(appState.audioCtx.destination);
+
+            osc.type = 'triangle';
+            osc.frequency.setValueAtTime(freq, appState.audioCtx.currentTime + i * 0.1);
+
+            const start = appState.audioCtx.currentTime + i * 0.1;
+            gain.gain.setValueAtTime(0, start);
+            gain.gain.linearRampToValueAtTime(0.2, start + 0.05);
+            gain.gain.exponentialRampToValueAtTime(0.01, start + 0.5);
+
+            osc.start(start);
+            osc.stop(start + 0.6);
+        });
+    }
+};
 
 function setupResizeObserver() {
     const observer = new ResizeObserver(entries => {
@@ -737,7 +805,11 @@ function paintPixel(screenX, screenY) {
                 appState.progressCtx.fillStyle = appState.currentLevel.palette[colorId - 1];
                 appState.progressCtx.fillRect(x, y, 1, 1);
 
+                appState.progressCtx.fillStyle = appState.currentLevel.palette[colorId - 1];
+                appState.progressCtx.fillRect(x, y, 1, 1);
+
                 triggerHaptic();
+                SoundManager.playPop();
                 updateProgress();
             }
         }
@@ -776,6 +848,7 @@ function useMagicWand(startX, startY) {
     }
 
     if (navigator.vibrate) navigator.vibrate([30, 50, 30]);
+    SoundManager.playPop();
     updateProgress();
     checkWin(); // Check for win after using a tool
 }
@@ -807,6 +880,7 @@ function useBomb(centerX, centerY) {
 
     if (count > 0) {
         if (navigator.vibrate) navigator.vibrate(100);
+        SoundManager.playPop();
         updateProgress();
         checkWin(); // Check for win after using a tool
     }
@@ -838,7 +912,15 @@ function updateProgress() {
     document.getElementById('progress-bar').style.width = `${percent}%`;
     document.getElementById('progress-text').innerText = `${percent}%`;
 
-    // Save progress
+    // Debounced Save
+    if (appState.saveTimeout) clearTimeout(appState.saveTimeout);
+    appState.saveTimeout = setTimeout(() => {
+        saveProgressImmediate();
+    }, 1000);
+}
+
+function saveProgressImmediate() {
+    if (!appState.currentLevel) return;
     localStorage.setItem(`save_${appState.currentLevel.id}`, JSON.stringify(Array.from(appState.paintedPixels)));
 }
 
@@ -859,7 +941,9 @@ function checkWin() {
         previewCanvas.classList.add('final-preview');
         previewContainer.appendChild(previewCanvas);
 
+
         document.getElementById('success-overlay').classList.add('active');
+        SoundManager.playSuccess();
 
         // Confetti!
         confetti({
