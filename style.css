@@ -114,6 +114,12 @@ h1 {
     transition: all 0.3s ease;
 }
 
+.final-preview {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+}
+
 .tab-btn.active {
     background: var(--primary);
     color: white;

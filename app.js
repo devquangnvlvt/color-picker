@@ -9,8 +9,10 @@ const appState = {
     paintedPixels: new Set(),
     canvas: null,
     ctx: null,
-    miniMapCanvas: null,
     miniMapCtx: null,
+    progressCanvas: null,
+    progressCtx: null,
+    paintedArray: null, // Uint8Array(width * height) for fast lookup
     container: null,
 
     // Interaction state
@@ -36,7 +38,20 @@ async function init() {
     renderGallery();
     setupEventListeners();
     setupImageUpload();
+    setupResizeObserver();
     animate();
+}
+
+function setupResizeObserver() {
+    const observer = new ResizeObserver(entries => {
+        for (let entry of entries) {
+            if (entry.target === appState.container) {
+                appState.canvas.width = entry.contentRect.width;
+                appState.canvas.height = entry.contentRect.height;
+            }
+        }
+    });
+    observer.observe(appState.container);
 }
 
 function setupImageUpload() {
@@ -247,6 +262,16 @@ async function loadLevel(id, customData = null) {
             const response = await fetch(`data/${id}.json`);
             appState.currentLevel = await response.json();
         }
+        // Initialize Off-screen Progress Canvas
+        appState.progressCanvas = document.createElement('canvas');
+        appState.progressCanvas.width = appState.currentLevel.width;
+        appState.progressCanvas.height = appState.currentLevel.height;
+        appState.progressCtx = appState.progressCanvas.getContext('2d', { alpha: true });
+
+        const width = appState.currentLevel.width;
+        const height = appState.currentLevel.height;
+        appState.paintedArray = new Uint8Array(width * height);
+
         appState.paintedPixels.clear();
         appState.selectedColorId = 1;
         appState.selectedTool = null;
@@ -256,7 +281,16 @@ async function loadLevel(id, customData = null) {
         const saved = localStorage.getItem(`save_${id}`);
         if (saved) {
             const arr = JSON.parse(saved);
-            arr.forEach(p => appState.paintedPixels.add(p));
+            const { palette, grid } = appState.currentLevel;
+            arr.forEach(p => {
+                appState.paintedPixels.add(p);
+                const [px, py] = p.split(',').map(Number);
+                appState.paintedArray[py * width + px] = 1;
+
+                const colorId = grid[py][px];
+                appState.progressCtx.fillStyle = palette[colorId - 1];
+                appState.progressCtx.fillRect(px, py, 1, 1);
+            });
         }
 
         // Show view FIRST
@@ -327,12 +361,11 @@ function animate() {
 }
 
 function draw() {
-    const { ctx, canvas, container, scale, offsetX, offsetY, currentLevel, paintedPixels } = appState;
+    const { ctx, canvas, scale, offsetX, offsetY, currentLevel, paintedArray } = appState;
+    if (!currentLevel) return;
 
-    canvas.width = container.clientWidth;
-    canvas.height = container.clientHeight;
-
-    ctx.fillStyle = "#1e293b";
+    // Background
+    ctx.fillStyle = "#0f172a";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     ctx.save();
@@ -340,11 +373,9 @@ function draw() {
     ctx.scale(scale, scale);
 
     const { width, height, grid, palette } = currentLevel;
-    const gridColor = 'rgba(0,0,0,0.15)';
+    const gridColor = 'rgba(255,255,255,0.05)';
     const unpaintedBg = 'rgba(255,255,255,0.02)';
     const invScale = 1 / scale;
-
-    // Pre-calculate some values
     const showNumbers = scale > 15;
 
     for (let y = 0; y < height; y++) {
@@ -352,15 +383,10 @@ function draw() {
             const colorId = grid[y][x];
             if (colorId === 0) continue;
 
-            const pos = `${x},${y}`;
-            const isPainted = paintedPixels.has(pos);
+            const isPainted = paintedArray[y * width + x] === 1;
 
-            // 1. Draw Fill
-            if (isPainted) {
-                ctx.fillStyle = palette[colorId - 1];
-                // Overlap by 0.02 units to cover sub-pixel gaps
-                ctx.fillRect(x - 0.01, y - 0.01, 1.02, 1.02);
-            } else {
+            // 1. Draw Unpainted background & Grid
+            if (!isPainted) {
                 ctx.fillStyle = unpaintedBg;
                 ctx.fillRect(x, y, 1, 1);
 
@@ -369,66 +395,22 @@ function draw() {
                     ctx.fillStyle = 'rgba(255,255,255,0.12)';
                     ctx.fillRect(x, y, 1, 1);
                 }
+
+                if (showNumbers) {
+                    ctx.fillStyle = 'rgba(255,255,255,0.3)';
+                    ctx.font = `0.4px Outfit`;
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText(colorId, x + 0.5, y + 0.5);
+                }
             }
 
-            // 2. Numbers
-            if (!isPainted && showNumbers) {
-                ctx.fillStyle = 'rgba(255,255,255,0.3)';
-                ctx.font = `0.4px Outfit`;
-                ctx.textAlign = 'center';
-                ctx.textBaseline = 'middle';
-                ctx.fillText(colorId, x + 0.5, y + 0.5);
-            }
-
-            // 3. Dynamic Grid
+            // 2. Draw Grid Lines
             ctx.strokeStyle = gridColor;
             ctx.lineWidth = invScale;
+            ctx.strokeRect(x, y, 1, 1);
 
-            // Right Edge
-            let drawRight = true;
-            if (x < width - 1) {
-                const rIsPainted = paintedPixels.has(`${x + 1},${y}`);
-                if (isPainted && rIsPainted && colorId === grid[y][x + 1]) {
-                    drawRight = false;
-                }
-            }
-            if (drawRight) {
-                ctx.beginPath();
-                ctx.moveTo(x + 1, y);
-                ctx.lineTo(x + 1, y + 1);
-                ctx.stroke();
-            }
-
-            // Bottom Edge
-            let drawBottom = true;
-            if (y < height - 1) {
-                const bIsPainted = paintedPixels.has(`${x},${y + 1}`);
-                if (isPainted && bIsPainted && colorId === grid[y + 1][x]) {
-                    drawBottom = false;
-                }
-            }
-            if (drawBottom) {
-                ctx.beginPath();
-                ctx.moveTo(x, y + 1);
-                ctx.lineTo(x + 1, y + 1);
-                ctx.stroke();
-            }
-
-            // Container Edges
-            if (x === 0) {
-                ctx.beginPath();
-                ctx.moveTo(x, y);
-                ctx.lineTo(x, y + 1);
-                ctx.stroke();
-            }
-            if (y === 0) {
-                ctx.beginPath();
-                ctx.moveTo(x, y);
-                ctx.lineTo(x + 1, y);
-                ctx.stroke();
-            }
-
-            // 4. Hint
+            // 3. Hint
             if (appState.hintPixel && appState.hintPixel.x === x && appState.hintPixel.y === y) {
                 ctx.strokeStyle = '#fff';
                 ctx.lineWidth = invScale * 3;
@@ -436,6 +418,10 @@ function draw() {
             }
         }
     }
+
+    // 4. Draw ALL Painted Pixels from off-screen canvas (Seamless & Fast)
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(appState.progressCanvas, 0, 0, width, height);
 
     ctx.restore();
 
@@ -745,6 +731,12 @@ function paintPixel(screenX, screenY) {
             const pos = `${x},${y}`;
             if (!appState.paintedPixels.has(pos)) {
                 appState.paintedPixels.add(pos);
+                appState.paintedArray[y * appState.currentLevel.width + x] = 1;
+
+                // Draw to off-screen progress canvas
+                appState.progressCtx.fillStyle = appState.currentLevel.palette[colorId - 1];
+                appState.progressCtx.fillRect(x, y, 1, 1);
+
                 triggerHaptic();
                 updateProgress();
             }
@@ -773,8 +765,12 @@ function useMagicWand(startX, startY) {
         if (x < 0 || x >= appState.currentLevel.width || y < 0 || y >= appState.currentLevel.height) continue;
         if (appState.currentLevel.grid[y][x] !== colorToFill) continue;
         if (appState.paintedPixels.has(pos)) continue;
-
         appState.paintedPixels.add(pos);
+        appState.paintedArray[y * appState.currentLevel.width + x] = 1;
+
+        // Draw to off-screen progress canvas
+        appState.progressCtx.fillStyle = appState.currentLevel.palette[colorToFill - 1];
+        appState.progressCtx.fillRect(x, y, 1, 1);
 
         stack.push([x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]);
     }
@@ -796,6 +792,12 @@ function useBomb(centerX, centerY) {
                     const pos = `${x},${y}`;
                     if (!appState.paintedPixels.has(pos)) {
                         appState.paintedPixels.add(pos);
+                        appState.paintedArray[y * appState.currentLevel.width + x] = 1;
+
+                        // Draw to off-screen progress canvas
+                        appState.progressCtx.fillStyle = appState.currentLevel.palette[colorId - 1];
+                        appState.progressCtx.fillRect(x, y, 1, 1);
+
                         count++;
                     }
                 }
@@ -844,6 +846,19 @@ function checkWin() {
     const total = appState.currentLevel.grid.flat().filter(c => c !== 0).length;
     if (appState.paintedPixels.size === total) {
         localStorage.setItem(`won_${appState.currentLevel.id}`, 'true');
+
+        // Populate Result Preview
+        const previewContainer = document.getElementById('result-preview');
+        previewContainer.innerHTML = '';
+        const previewCanvas = document.createElement('canvas');
+        previewCanvas.width = appState.currentLevel.width;
+        previewCanvas.height = appState.currentLevel.height;
+        const pCtx = previewCanvas.getContext('2d');
+        pCtx.drawImage(appState.progressCanvas, 0, 0);
+
+        previewCanvas.classList.add('final-preview');
+        previewContainer.appendChild(previewCanvas);
+
         document.getElementById('success-overlay').classList.add('active');
 
         // Confetti!
