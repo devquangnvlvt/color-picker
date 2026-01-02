@@ -1,10 +1,10 @@
-const CACHE_NAME = 'pixel-art-v6';
+const CACHE_NAME = 'pixel-art-v18';
 const ASSETS = [
     './',
     './index.html',
     './style.css',
     './app.js',
-    './data/manifest.json',
+    './data/levels.json',
     './data/animal_0.json',
     './data/animal_1.json',
     './data/food_0.json'

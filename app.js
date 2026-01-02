@@ -9,6 +9,8 @@ const appState = {
     paintedPixels: new Set(),
     canvas: null,
     ctx: null,
+    miniMapCanvas: null,
+    miniMapCtx: null,
     container: null,
 
     // Interaction state
@@ -26,28 +28,163 @@ const appState = {
 async function init() {
     appState.canvas = document.getElementById('game-canvas');
     appState.ctx = appState.canvas.getContext('2d', { alpha: false });
+    appState.miniMapCanvas = document.getElementById('mini-map-canvas');
+    appState.miniMapCtx = appState.miniMapCanvas.getContext('2d', { alpha: true });
     appState.container = document.getElementById('game-canvas-container');
 
     await loadManifest();
     renderGallery();
     setupEventListeners();
+    setupImageUpload();
     animate();
+}
+
+function setupImageUpload() {
+    const input = document.getElementById('image-upload');
+    const btn = document.getElementById('upload-btn');
+    if (!input || !btn) return;
+
+    btn.onclick = () => input.click();
+    input.onchange = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            const img = new Image();
+            img.onload = () => processImage(img);
+            img.src = event.target.result;
+        };
+        reader.readAsDataURL(file);
+    };
+}
+
+async function processImage(img) {
+    const targetSize = 100; // Increased resolution for much better detail
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+    // Calculate dimensions
+    let w = targetSize, h = targetSize;
+    if (img.width > img.height) {
+        h = Math.round(targetSize * (img.height / img.width));
+    } else {
+        w = Math.round(targetSize * (img.width / img.height));
+    }
+
+    canvas.width = w;
+    canvas.height = h;
+
+    // Draw original image (Removed aggressive filters for fidelity)
+    ctx.drawImage(img, 0, 0, w, h);
+
+    const imageData = ctx.getImageData(0, 0, w, h).data;
+    const palette = [];
+    const grid = [];
+
+    // Finer color quantization (step 4) and clamping [0, 255]
+    for (let y = 0; y < h; y++) {
+        const row = [];
+        for (let x = 0; x < w; x++) {
+            const i = (y * w + x) * 4;
+            // Rounding to 4 and clamping to prevent 256+ values
+            const r = Math.min(255, Math.round(imageData[i] / 4) * 4);
+            const g = Math.min(255, Math.round(imageData[i + 1] / 4) * 4);
+            const b = Math.min(255, Math.round(imageData[i + 2] / 4) * 4);
+            const a = imageData[i + 3];
+
+            if (a < 128) {
+                row.push(0);
+                continue;
+            }
+
+            const hex = `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1)}`;
+            let colorIdx = palette.indexOf(hex);
+            if (colorIdx === -1) {
+                if (palette.length < 60) {
+                    palette.push(hex);
+                    colorIdx = palette.length - 1;
+                } else {
+                    colorIdx = findClosestColor(hex, palette);
+                }
+            }
+            row.push(colorIdx + 1);
+        }
+        grid.push(row);
+    }
+
+    const customLevel = {
+        id: 'user_custom_' + Date.now(),
+        category: 'custom',
+        width: w,
+        height: h,
+        grid: grid,
+        palette: palette
+    };
+
+    loadLevel(customLevel.id, customLevel);
+}
+
+function findClosestColor(hex, palette) {
+    const r1 = parseInt(hex.slice(1, 3), 16);
+    const g1 = parseInt(hex.slice(3, 5), 16);
+    const b1 = parseInt(hex.slice(5, 7), 16);
+
+    let minChild = 0;
+    let minDist = Infinity;
+
+    palette.forEach((p, i) => {
+        const r2 = parseInt(p.slice(1, 3), 16);
+        const g2 = parseInt(p.slice(3, 5), 16);
+        const b2 = parseInt(p.slice(5, 7), 16);
+        const dist = Math.sqrt((r1 - r2) ** 2 + (g1 - g2) ** 2 + (b1 - b2) ** 2);
+        if (dist < minDist) {
+            minDist = dist;
+            minChild = i;
+        }
+    });
+    return minChild;
 }
 
 // Load Levels Manifest
 async function loadManifest() {
     try {
-        const response = await fetch('data/manifest.json');
+        const response = await fetch('data/levels.json');
         appState.levels = await response.json();
     } catch (e) {
         console.error("Failed to load manifest", e);
     }
 }
 
+// Global observer for lazy loading previews
+let galleryObserver = null;
+
 // Render Gallery
 function renderGallery(filter = 'all') {
     const grid = document.getElementById('gallery-grid');
     grid.innerHTML = '';
+
+    // Initialize observer if not exists
+    if (!galleryObserver) {
+        galleryObserver = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    const canvas = entry.target.querySelector('.thumbnail-canvas');
+                    const levelId = entry.target.dataset.id;
+                    if (canvas && levelId) {
+                        renderPreview(levelId, canvas);
+                    }
+                    galleryObserver.unobserve(entry.target);
+                }
+            });
+        }, {
+            root: grid,
+            rootMargin: '100px', // Pre-load images slightly before they enter view
+            threshold: 0.1
+        });
+    } else {
+        galleryObserver.disconnect(); // Clear previous observations
+    }
 
     const filtered = filter === 'all'
         ? appState.levels
@@ -56,32 +193,23 @@ function renderGallery(filter = 'all') {
     filtered.forEach(level => {
         const div = document.createElement('div');
         div.className = 'level-card';
+        div.dataset.id = level.id;
 
         const canvas = document.createElement('canvas');
         canvas.className = 'thumbnail-canvas';
         div.appendChild(canvas);
 
-        const idHint = document.createElement('div');
-        idHint.className = 'loading-hint';
-        idHint.innerText = `#${level.id.split('_')[1]}`;
-        // div.appendChild(idHint); // Optional: keep or remove ID hint
-
         div.onclick = () => loadLevel(level.id);
 
         // Check completion
-        const saved = localStorage.getItem(`save_${level.id}`);
-        if (saved) {
-            const painted = JSON.parse(saved).length;
-            // Fetch total from manifest if available or just check if it was marked as won
-            if (localStorage.getItem(`won_${level.id}`)) {
-                div.classList.add('completed');
-            }
+        if (localStorage.getItem(`won_${level.id}`)) {
+            div.classList.add('completed');
         }
 
         grid.appendChild(div);
 
-        // Render preview
-        renderPreview(level.id, canvas);
+        // Observe for lazy loading
+        galleryObserver.observe(div);
     });
 }
 
@@ -111,10 +239,14 @@ async function renderPreview(id, canvas) {
 }
 
 // Load Level Data
-async function loadLevel(id) {
+async function loadLevel(id, customData = null) {
     try {
-        const response = await fetch(`data/${id}.json`);
-        appState.currentLevel = await response.json();
+        if (customData) {
+            appState.currentLevel = customData;
+        } else {
+            const response = await fetch(`data/${id}.json`);
+            appState.currentLevel = await response.json();
+        }
         appState.paintedPixels.clear();
         appState.selectedColorId = 1;
         appState.selectedTool = null;
@@ -205,75 +337,197 @@ function draw() {
 
     ctx.save();
     ctx.translate(offsetX, offsetY);
+    ctx.scale(scale, scale);
 
     const { width, height, grid, palette } = currentLevel;
+    const gridColor = 'rgba(0,0,0,0.15)';
+    const unpaintedBg = 'rgba(255,255,255,0.02)';
+    const invScale = 1 / scale;
+
+    // Pre-calculate some values
+    const showNumbers = scale > 15;
 
     for (let y = 0; y < height; y++) {
         for (let x = 0; x < width; x++) {
             const colorId = grid[y][x];
-            if (colorId === 0) continue; // Skip transparency
+            if (colorId === 0) continue;
 
-            const px = x * scale;
-            const py = y * scale;
+            const pos = `${x},${y}`;
+            const isPainted = paintedPixels.has(pos);
 
-            const isPainted = paintedPixels.has(`${x},${y}`);
-
+            // 1. Draw Fill
             if (isPainted) {
                 ctx.fillStyle = palette[colorId - 1];
-                ctx.fillRect(px, py, scale, scale);
+                // Overlap by 0.02 units to cover sub-pixel gaps
+                ctx.fillRect(x - 0.01, y - 0.01, 1.02, 1.02);
             } else {
-                // Draw grid cell
-                ctx.strokeStyle = 'rgba(255,255,255,0.05)';
-                ctx.strokeRect(px, py, scale, scale);
+                ctx.fillStyle = unpaintedBg;
+                ctx.fillRect(x, y, 1, 1);
 
-                // Draw number if zoomed in enough
-                if (scale > 15) {
-                    ctx.fillStyle = 'rgba(255,255,255,0.3)';
-                    ctx.font = `${scale / 2}px Outfit`;
-                    ctx.textAlign = 'center';
-                    ctx.textBaseline = 'middle';
-                    ctx.fillText(colorId, px + scale / 2, py + scale / 2);
-                }
-
-                // Highlight cells matching selected color
+                // Highlight color matching
                 if (colorId === appState.selectedColorId) {
-                    ctx.fillStyle = 'rgba(255,255,255,0.1)';
-                    ctx.fillRect(px, py, scale, scale);
+                    ctx.fillStyle = 'rgba(255,255,255,0.12)';
+                    ctx.fillRect(x, y, 1, 1);
                 }
             }
 
-            // Draw hint highlight
+            // 2. Numbers
+            if (!isPainted && showNumbers) {
+                ctx.fillStyle = 'rgba(255,255,255,0.3)';
+                ctx.font = `0.4px Outfit`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(colorId, x + 0.5, y + 0.5);
+            }
+
+            // 3. Dynamic Grid
+            ctx.strokeStyle = gridColor;
+            ctx.lineWidth = invScale;
+
+            // Right Edge
+            let drawRight = true;
+            if (x < width - 1) {
+                const rIsPainted = paintedPixels.has(`${x + 1},${y}`);
+                if (isPainted && rIsPainted && colorId === grid[y][x + 1]) {
+                    drawRight = false;
+                }
+            }
+            if (drawRight) {
+                ctx.beginPath();
+                ctx.moveTo(x + 1, y);
+                ctx.lineTo(x + 1, y + 1);
+                ctx.stroke();
+            }
+
+            // Bottom Edge
+            let drawBottom = true;
+            if (y < height - 1) {
+                const bIsPainted = paintedPixels.has(`${x},${y + 1}`);
+                if (isPainted && bIsPainted && colorId === grid[y + 1][x]) {
+                    drawBottom = false;
+                }
+            }
+            if (drawBottom) {
+                ctx.beginPath();
+                ctx.moveTo(x, y + 1);
+                ctx.lineTo(x + 1, y + 1);
+                ctx.stroke();
+            }
+
+            // Container Edges
+            if (x === 0) {
+                ctx.beginPath();
+                ctx.moveTo(x, y);
+                ctx.lineTo(x, y + 1);
+                ctx.stroke();
+            }
+            if (y === 0) {
+                ctx.beginPath();
+                ctx.moveTo(x, y);
+                ctx.lineTo(x + 1, y);
+                ctx.stroke();
+            }
+
+            // 4. Hint
             if (appState.hintPixel && appState.hintPixel.x === x && appState.hintPixel.y === y) {
                 ctx.strokeStyle = '#fff';
-                ctx.lineWidth = 3;
-                ctx.strokeRect(px, py, scale, scale);
-                ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
-                ctx.fillRect(px, py, scale, scale);
+                ctx.lineWidth = invScale * 3;
+                ctx.strokeRect(x, y, 1, 1);
             }
         }
     }
 
     ctx.restore();
+
+    // Draw Mini-map overlay
+    drawMiniMap();
+}
+
+function drawMiniMap() {
+    const { miniMapCanvas: canvas, miniMapCtx: ctx, currentLevel, paintedPixels, scale, offsetX, offsetY, container } = appState;
+    if (!currentLevel) return;
+
+    const { width, height, grid, palette } = currentLevel;
+    const containerEl = document.getElementById('mini-map-container');
+
+    // Only show mini-map when zoomed in
+    const totalW = width * scale;
+    const totalH = height * scale;
+    const isZoomed = totalW > container.clientWidth * 1.2 || totalH > container.clientHeight * 1.2;
+
+    containerEl.classList.toggle('active', isZoomed);
+    if (!isZoomed) return;
+
+    // Set mini-map canvas size
+    const maxMapSize = 110;
+    const mapScale = Math.min(maxMapSize / width, maxMapSize / height);
+    canvas.width = width * mapScale;
+    canvas.height = height * mapScale;
+
+    // Clear and draw mini-map bg (dark)
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Draw pixel progress simplified
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            const colorId = grid[y][x];
+            if (colorId === 0) continue;
+
+            const isPainted = paintedPixels.has(`${x},${y}`);
+            if (isPainted) {
+                ctx.fillStyle = palette[colorId - 1];
+                ctx.fillRect(x * mapScale, y * mapScale, mapScale, mapScale);
+            } else {
+                ctx.fillStyle = 'rgba(255,255,255,0.05)';
+                ctx.fillRect(x * mapScale, y * mapScale, mapScale, mapScale);
+            }
+        }
+    }
+
+    // Draw Viewport Indicator
+    // The viewport rect in image coordinates:
+    // Left: -offsetX / scale, Top: -offsetY / scale
+    // Width: containerWidth / scale, Height: containerHeight / scale
+    const viewportX = (-offsetX / scale) * mapScale;
+    const viewportY = (-offsetY / scale) * mapScale;
+    const viewportW = (container.clientWidth / scale) * mapScale;
+    const viewportH = (container.clientHeight / scale) * mapScale;
+
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(viewportX, viewportY, viewportW, viewportH);
+
+    // Slight highlight on viewport
+    ctx.fillStyle = 'rgba(255,255,255,0.1)';
+    ctx.fillRect(viewportX, viewportY, viewportW, viewportH);
 }
 
 // Events
 function setupEventListeners() {
     const canvas = document.getElementById('game-canvas');
 
-    // Prevent context menu to allow right-click panning
-    canvas.oncontextmenu = (e) => e.preventDefault();
+    // Aggressive context menu suppression (prevent right-click menu)
+    window.addEventListener('contextmenu', (e) => {
+        if (document.getElementById('game-view').classList.contains('active')) {
+            e.preventDefault();
+        }
+    }, true);
 
+    // Spacebar Panning (Modern design tool style)
     canvas.onpointerdown = (e) => {
-        canvas.setPointerCapture(e.pointerId);
+        // Only capture for primary/secondary buttons
+        if (e.button === 0 || e.button === 2) {
+            canvas.setPointerCapture(e.pointerId);
+        }
+
         appState.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
         if (appState.activePointers.size === 1) {
-            // One pointer: could be Paint or Pan (if right click)
-            if (e.pointerType === 'mouse' && e.button === 2) {
-                // Right click = Pan start
+            if (e.button === 2) {
                 appState.isPanning = true;
-            } else {
-                // Left click or Touch = Paint start
+                e.preventDefault();
+            } else if (e.button === 0) {
                 appState.isPainting = true;
                 paintPixel(e.clientX, e.clientY);
             }
@@ -293,10 +547,14 @@ function setupEventListeners() {
 
         // Update pointer position
         appState.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        // Detect if right button is being held durante move
+        const isRightClick = (e.buttons & 2) === 2;
+        if (isRightClick) appState.isPanning = true;
 
-        if (appState.isPainting && appState.activePointers.size === 1) {
+        if (appState.isPainting && appState.activePointers.size === 1 && !isRightClick) {
             paintPixel(e.clientX, e.clientY);
         } else if (appState.isPanning || appState.activePointers.size === 2) {
+            e.preventDefault();
             if (appState.activePointers.size === 2) {
                 // Handle Zoom
                 const currentDist = getPinchDistance();
@@ -368,6 +626,22 @@ function setupEventListeners() {
         appState.offsetX = mouseX - (mouseX - appState.offsetX) * ratio;
         appState.offsetY = mouseY - (mouseY - appState.offsetY) * ratio;
     };
+
+    // Keyboard support for Spacebar Panning (fallback)
+    window.addEventListener('keydown', (e) => {
+        if (e.code === 'Space') {
+            appState.isPanning = true;
+            canvas.style.cursor = 'grab';
+            if (e.target === document.body) e.preventDefault();
+        }
+    });
+
+    window.addEventListener('keyup', (e) => {
+        if (e.code === 'Space') {
+            appState.isPanning = false;
+            canvas.style.cursor = 'crosshair';
+        }
+    });
 
     // Navigation
     document.getElementById('back-btn').onclick = () => {

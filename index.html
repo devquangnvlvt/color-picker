@@ -5,7 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Pixel Art Color by Number</title>
-    <link rel="stylesheet" href="style.css?v=6">
+    <link rel="stylesheet" href="style.css?v=8">
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
 </head>
 
@@ -14,7 +14,13 @@
         <!-- Main Menu / Gallery -->
         <section id="gallery-view" class="view active">
             <header class="glass-header">
-                <h1>Pixel Art Pro</h1>
+                <div class="header-top">
+                    <h1>Pixel Art Pro</h1>
+                    <button id="upload-btn" class="ai-btn" title="Tải ảnh từ máy">
+                        <span>📷 AI</span>
+                    </button>
+                    <input type="file" id="image-upload" accept="image/*" hidden>
+                </div>
                 <div class="tabs">
                     <button class="tab-btn active" data-category="all">Tất cả</button>
                     <button class="tab-btn" data-category="animal">Động vật</button>
@@ -51,18 +57,21 @@
 
             <div id="game-canvas-container">
                 <canvas id="game-canvas"></canvas>
-
-                <div id="tool-shelf" class="tool-shelf">
-                    <button id="tool-wand" class="tool-btn" title="Magic Wand">
-                        <span>✨</span>
-                    </button>
-                    <button id="tool-bomb" class="tool-btn" title="Explosive Bomb">
-                        <span>💣</span>
-                    </button>
-                    <button id="tool-hint" class="tool-btn" title="Hint">
-                        <span>🔍</span>
-                    </button>
+                <div id="mini-map-container">
+                    <canvas id="mini-map-canvas"></canvas>
                 </div>
+            </div>
+
+            <div id="tool-shelf" class="tool-shelf">
+                <button id="tool-wand" class="tool-btn" title="Magic Wand">
+                    <span>✨</span>
+                </button>
+                <button id="tool-bomb" class="tool-btn" title="Explosive Bomb">
+                    <span>💣</span>
+                </button>
+                <button id="tool-hint" class="tool-btn" title="Hint">
+                    <span>🔍</span>
+                </button>
             </div>
 
             <footer class="color-palette-footer glass-footer">
